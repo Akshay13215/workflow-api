@@ -26,14 +26,37 @@ app.use(cors({
 }));
 
 /* ==== Mongo ==== */
+/* ==== Mongo (robust connect) ==== */
 const client = new MongoClient(MONGODB_URI);
-await client.connect();
-const db = client.db(); // database already in URI (workflow)
-const Users = db.collection('users');
-const Sessions = db.collection('sessions');
-const WorkItems = db.collection('work_items');
-const Logs = db.collection('workflow_log');
-const Lookups = db.collection('lookups');
+let db, Users, Sessions, WorkItems, Logs, Lookups, mongoReady = false;
+
+async function connectMongoWithRetry() {
+  while (!mongoReady) {
+    try {
+      await client.connect();
+      db = client.db(); // workflow from URI
+      Users = db.collection('users');
+      Sessions = db.collection('sessions');
+      WorkItems = db.collection('work_items');
+      Logs = db.collection('workflow_log');
+      Lookups = db.collection('lookups');
+      mongoReady = true;
+      console.log('✅ Mongo connected');
+    } catch (e) {
+      console.error('❌ Mongo connect failed:', e.message);
+      await new Promise(r => setTimeout(r, 5000));
+    }
+  }
+}
+connectMongoWithRetry();
+
+// Only block DB-dependent routes until ready
+app.use((req,res,next)=>{
+  if (!mongoReady && req.path !== '/' && !req.path.startsWith('/setup'))
+    return res.status(503).json({ error: 'DB not ready' });
+  next();
+});
+
 
 /* ==== Helpers ==== */
 const ROLES = ['ADMIN','EDITOR','R1','R2','R3'];
@@ -230,4 +253,5 @@ app.post('/setup/first-admin', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`API listening on :${PORT}`);
 });
+
 
