@@ -31,7 +31,7 @@ const client = new MongoClient(MONGODB_URI, { serverSelectionTimeoutMS: 8000 });
 console.log('Connecting to Mongo…');
 await client.connect();
 console.log('Mongo connected');
-let db, Users, Sessions, WorkItems, Logs, Lookups, mongoReady = false;
+let db, Users, Sessions, WorkItems, Logs, Lookups, Projects, mongoReady = false;
 
 async function connectMongoWithRetry() {
   while (!mongoReady) {
@@ -348,5 +348,6 @@ app.get('/auth/me', auth(ROLES), async (req, res) => {
   const u = await Users.findOne({ _id: new ObjectId(id) }, { projection: { passHash: 0 } });
   res.json({ user: { id, username, role, projects: u?.projects || [] } });
 });
+
 
 
