@@ -31,6 +31,13 @@ function requireAuth(req, res, next) {
   }
 }
 
+const app = express();
+app.use(express.json({ limit: '1mb' }));
+app.use(cors({
+  origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN,
+  credentials: false
+}));
+
 // Public routes
 app.post('/api/auth/login', loginHandler);
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
@@ -45,12 +52,6 @@ app.get('/api/items', async (req, res) => {
   res.json({ items });
 });
 
-const app = express();
-app.use(express.json({ limit: '1mb' }));
-app.use(cors({
-  origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN,
-  credentials: false
-}));
 
 /* ==== Mongo ==== */
 /* ==== Mongo (robust connect) ==== */
@@ -375,6 +376,7 @@ app.get('/auth/me', auth(ROLES), async (req, res) => {
   const u = await Users.findOne({ _id: new ObjectId(id) }, { projection: { passHash: 0 } });
   res.json({ user: { id, username, role, projects: u?.projects || [] } });
 });
+
 
 
 
