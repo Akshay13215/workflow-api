@@ -212,7 +212,22 @@ app.post('/work-items/assign', auth(['ADMIN']), async (req, res) => {
 /* ==== Health ==== */
 app.get('/', (_req, res) => res.send('OK'));
 
+// --- One-time bootstrap to create the first ADMIN (protected by SETUP_SECRET) ---
+app.post('/setup/first-admin', async (req, res) => {
+  const ok = req.headers['x-setup-secret'] === process.env.SETUP_SECRET;
+  if (!ok) return res.status(403).json({ error: 'Forbidden' });
+  const adminExists = await Users.countDocuments({ role: 'ADMIN' });
+  if (adminExists) return res.status(400).json({ error: 'Admin already exists' });
+
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.status(400).json({ error: 'username/password required' });
+  const passHash = await bcrypt.hash(password, 10);
+  await Users.insertOne({ username, passHash, role: 'ADMIN', isActive: true, createdAt: new Date() });
+  res.json({ ok: true });
+});
+
 /* ==== Start ==== */
 app.listen(PORT, () => {
   console.log(`API listening on :${PORT}`);
 });
+
