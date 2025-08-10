@@ -43,6 +43,16 @@ async function connectMongoWithRetry() {
       WorkItems = db.collection('work_items');
       Logs = db.collection('workflow_log');
       Lookups = db.collection('lookups');
+      Projects = db.collection('projects');
+
+      // helpful indexes
+      await WorkItems.createIndex({ status: 1, lastActionAt: -1 });
+      await WorkItems.createIndex({ projectKey: 1, status: 1 });
+      await WorkItems.createIndex({ editor: 1 });
+      await WorkItems.createIndex({ r1: 1, r2: 1, r3: 1 });
+      await Users.createIndex({ username: 1 }, { unique: true });
+      await Projects.createIndex({ key: 1 }, { unique: true });
+
       mongoReady = true;
       console.log('✅ Mongo connected');
     } catch (e) {
@@ -139,6 +149,72 @@ app.post('/users/create', auth(['ADMIN']), async (req, res) => {
   res.json({ ok: true });
 });
 
+/* ==== Admin: Users list & project mapping ==== */
+app.get('/admin/users/list', auth(['ADMIN']), async (req, res) => {
+  const users = await Users.find({}, { projection: { passHash: 0 } }).toArray();
+  res.json({ users });
+});
+
+app.post('/admin/users/update-projects', auth(['ADMIN']), async (req, res) => {
+  if (!requireBody(['username', 'projects'], req, res)) return;
+  const { username, projects } = req.body; // array of project keys
+  await Users.updateOne({ username }, { $set: { projects } });
+  res.json({ ok: true });
+});
+
+/* ==== Admin: Projects CRUD ==== */
+// columns = [{ key, label, type, required, rolesVisible? ['ADMIN','EDITOR','R1','R2','R3'] }]
+app.post('/admin/projects/create', auth(['ADMIN']), async (req, res) => {
+  if (!requireBody(['key', 'name', 'columns'], req, res)) return;
+  const { key, name, columns = [], stages = null, isActive = true } = req.body;
+  const doc = { key, name, columns, stages, isActive, createdAt: new Date() };
+  await Projects.insertOne(doc);
+  res.json({ ok: true, project: doc });
+});
+
+app.post('/admin/projects/update', auth(['ADMIN']), async (req, res) => {
+  if (!requireBody(['key'], req, res)) return;
+  const { key, name, columns, stages, isActive } = req.body;
+  const update = {};
+  if (name !== undefined) update.name = name;
+  if (columns !== undefined) update.columns = columns;
+  if (stages !== undefined) update.stages = stages;
+  if (isActive !== undefined) update.isActive = isActive;
+  const out = await Projects.findOneAndUpdate({ key }, { $set: update }, { returnDocument: 'after' });
+  res.json({ ok: true, project: out.value });
+});
+
+app.get('/admin/projects/list', auth(['ADMIN']), async (_req, res) => {
+  const projects = await Projects.find({}).sort({ name: 1 }).toArray();
+  res.json({ projects });
+});
+
+/* ==== Admin: Bulk create work items ==== */
+app.post('/work-items/bulk-create', auth(['ADMIN']), async (req, res) => {
+  if (!requireBody(['projectKey', 'titles'], req, res)) return;
+  const { projectKey, titles = [], defaults = {} } = req.body;
+  if (!Array.isArray(titles) || titles.length === 0) {
+    return res.status(400).json({ error: 'titles must be a non-empty array' });
+  }
+
+  const project = await Projects.findOne({ key: projectKey });
+  if (!project) return res.status(400).json({ error: 'Unknown projectKey' });
+
+  const now = new Date();
+  const docs = titles.map(t => ({
+    projectKey,
+    title: String(t).trim(),
+    status: 'UNASSIGNED',
+    version: 1,
+    lastActionAt: now,
+    fields: defaults, // optional arbitrary fields per project columns
+  }));
+
+  const result = await WorkItems.insertMany(docs);
+  res.json({ ok: true, inserted: result.insertedCount });
+});
+
+
 /* ==== Dashboard counts ==== */
 app.get('/dashboard/counts', auth(ROLES), async (req, res) => {
   const { username, role } = req.user;
@@ -156,20 +232,20 @@ app.get('/dashboard/counts', auth(ROLES), async (req, res) => {
   res.json({ counts: docs });
 });
 
-/* ==== List queue (server-side paging) ==== */
+/* ==== List queue (server-side paging) with project scoping ==== */
 app.post('/work-items/list', auth(ROLES), async (req, res) => {
   const { username, role } = req.user;
-  const { view = 'default', page = 0, pageSize = 50, search = '' } = req.body || {};
+  const { view = 'default', page = 0, pageSize = 50, search = '', projectKey } = req.body || {};
   const skip = Math.max(0, Number(page)) * Math.max(1, Number(pageSize));
 
-  // basic filters by role/view
   let filter = {};
+  if (projectKey) filter.projectKey = projectKey;
+
   if (role === 'EDITOR') filter.editor = username;
   if (role === 'R1') filter.r1 = username;
   if (role === 'R2') filter.r2 = username;
   if (role === 'R3') filter.r3 = username;
 
-  // view → status mapping (tweak as you like)
   const viewMap = {
     editor_assigned: { status: 'EDITING' },
     editor_rework:   { status: { $in: ['R1_REWORK','R2_REWORK','R3_REWORK'] } },
@@ -180,14 +256,18 @@ app.post('/work-items/list', auth(ROLES), async (req, res) => {
   Object.assign(filter, viewMap[view] || {});
   if (search) filter.title = { $regex: search, $options: 'i' };
 
-  const cursor = WorkItems.find(filter, { projection: { title: 1, status:1, lastActionAt:1, editor:1, r1:1, r2:1, r3:1, version:1 } })
-                          .sort({ lastActionAt: -1 })
-                          .skip(skip)
-                          .limit(Math.max(1, Math.min(200, Number(pageSize))));
+  const cursor = WorkItems.find(
+      filter,
+      { projection: { title:1, status:1, lastActionAt:1, editor:1, r1:1, r2:1, r3:1, version:1, projectKey:1 } }
+    )
+    .sort({ lastActionAt: -1 })
+    .skip(skip)
+    .limit(Math.max(1, Math.min(200, Number(pageSize))));
   const items = await cursor.toArray();
   const total = await WorkItems.countDocuments(filter);
   res.json({ items, total, page, pageSize });
 });
+
 
 /* ==== Transition (atomic + optimistic) ==== */
 app.post('/work-items/transition', auth(ROLES), async (req, res) => {
@@ -257,5 +337,16 @@ app.listen(PORT, () => {
   console.log(`API listening on :${PORT}`);
 });
 
+
+/* ==== Meta ==== */
+app.get('/meta/fsm', auth(ROLES), async (_req, res) => {
+  res.json({ fsm: FSM });
+});
+
+app.get('/auth/me', auth(ROLES), async (req, res) => {
+  const { id, username, role } = req.user;
+  const u = await Users.findOne({ _id: new ObjectId(id) }, { projection: { passHash: 0 } });
+  res.json({ user: { id, username, role, projects: u?.projects || [] } });
+});
 
 
