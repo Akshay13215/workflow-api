@@ -27,7 +27,10 @@ app.use(cors({
 
 /* ==== Mongo ==== */
 /* ==== Mongo (robust connect) ==== */
-const client = new MongoClient(MONGODB_URI);
+const client = new MongoClient(MONGODB_URI, { serverSelectionTimeoutMS: 8000 });
+console.log('Connecting to Mongo…');
+await client.connect();
+console.log('Mongo connected');
 let db, Users, Sessions, WorkItems, Logs, Lookups, mongoReady = false;
 
 async function connectMongoWithRetry() {
@@ -253,5 +256,6 @@ app.post('/setup/first-admin', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`API listening on :${PORT}`);
 });
+
 
 
