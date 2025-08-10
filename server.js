@@ -18,6 +18,33 @@ if (!MONGODB_URI || !JWT_SECRET) {
   process.exit(1);
 }
 
+// Simple JWT guard
+function requireAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.replace(/^Bearer\s+/i, '');
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    return next();
+  } catch (e) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+}
+
+// Public routes
+app.post('/api/auth/login', loginHandler);
+app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
+// Protect everything else under /api
+app.use('/api', requireAuth);
+
+// Example: dashboard data now protected
+app.get('/api/items', async (req, res) => {
+  // req.user is available
+  const items = await Items.find({ /* ... */ }).lean();
+  res.json({ items });
+});
+
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 app.use(cors({
@@ -348,6 +375,7 @@ app.get('/auth/me', auth(ROLES), async (req, res) => {
   const u = await Users.findOne({ _id: new ObjectId(id) }, { projection: { passHash: 0 } });
   res.json({ user: { id, username, role, projects: u?.projects || [] } });
 });
+
 
 
 
